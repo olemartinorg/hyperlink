@@ -1,5 +1,6 @@
 mod collector;
 mod html;
+mod interner;
 mod markdown;
 mod paragraph;
 
@@ -10,7 +11,6 @@ use std::process;
 
 use anyhow::{anyhow, Context, Error};
 use bumpalo::collections::Vec as BumpVec;
-use bumpalo::Bump;
 use jwalk::WalkDir;
 use markdown::DocumentSource;
 use rayon::prelude::*;
@@ -19,6 +19,7 @@ use thread_local::ThreadLocal;
 
 use collector::{BrokenLinkCollector, LinkCollector, UsedLinkCollector};
 use html::{DefinedLink, Document, Href, Link};
+use interner::StringInterner;
 use paragraph::{DebugParagraphWalker, Paragraph, ParagraphHasher};
 
 static MARKDOWN_FILES: &[&str] = &["md", "mdx"];
@@ -119,12 +120,12 @@ fn main() -> Result<(), Error> {
 
     let base_path = base_path.unwrap();
 
-    let arenas = ThreadLocal::new();
+    let interners = ThreadLocal::new();
 
     println!("Reading files");
 
     let html_result = extract_html_links::<BrokenLinkCollector>(
-        &arenas,
+        &interners,
         &base_path,
         check_anchors,
         sources_path.is_some(),
@@ -132,7 +133,7 @@ fn main() -> Result<(), Error> {
 
     let paragraps_to_sourcefile = if let Some(ref sources_path) = sources_path {
         println!("Reading source files");
-        extract_markdown_paragraphs(&arenas, sources_path)?
+        extract_markdown_paragraphs(&interners, sources_path)?
     } else {
         BTreeMap::new()
     };
@@ -259,7 +260,7 @@ fn print_github_actions_href_list(hrefs: &BTreeSet<Href<'_>>) {
 }
 
 fn dump_paragraphs(path: PathBuf) -> Result<(), Error> {
-    let arena = Bump::new();
+    let interner = StringInterner::default();
 
     let extension = match path.extension() {
         Some(x) => x,
@@ -275,10 +276,10 @@ fn dump_paragraphs(path: PathBuf) -> Result<(), Error> {
                 .collect()
         }
         Some(x) if HTML_FILES.contains(&x) => {
-            let document = Document::new(&arena, Path::new(""), &path);
+            let document = Document::new(&interner, Path::new(""), &path);
             let mut links = Vec::new();
             document.links::<DebugParagraphWalker<ParagraphHasher>>(
-                &arena,
+                &interner,
                 &mut Vec::new(),
                 &mut links,
                 false,
@@ -306,7 +307,7 @@ struct HtmlResult<C> {
 }
 
 fn extract_html_links<'a, C: LinkCollector<'a>>(
-    arenas: &'a ThreadLocal<Bump>,
+    interners: &'a ThreadLocal<StringInterner>,
     base_path: &Path,
     check_anchors: bool,
     get_paragraphs: bool,
@@ -341,8 +342,12 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
                     return Ok((xml_buf, link_buf, collector, documents_count, file_count));
                 }
 
-                let arena = arenas.get_or_default();
-                let document = Document::new(&arena, &base_path, arena.alloc(entry.path()));
+                let interner = interners.get_or_default();
+                let document = Document::new(
+                    &interner,
+                    &base_path,
+                    interner.get_arena().alloc(entry.path()),
+                );
 
                 collector.ingest(Link::Defines(DefinedLink {
                     href: document.href,
@@ -360,7 +365,7 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
 
                 document
                     .links::<ParagraphHasher>(
-                        arena,
+                        interner,
                         &mut xml_buf,
                         &mut link_buf,
                         check_anchors,
@@ -408,7 +413,7 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
 type MarkdownResult<'a> = BTreeMap<Paragraph, BumpVec<'a, DocumentSource>>;
 
 fn extract_markdown_paragraphs<'a>(
-    arenas: &'a ThreadLocal<Bump>,
+    interners: &'a ThreadLocal<StringInterner>,
     sources_path: &Path,
 ) -> Result<MarkdownResult<'a>, Error> {
     let entries = WalkDir::new(sources_path)
@@ -450,13 +455,13 @@ fn extract_markdown_paragraphs<'a>(
         .collect();
 
     let mut paragraps_to_sourcefile = BTreeMap::new();
-    let main_arena = arenas.get_or_default();
+    let main_interner = interners.get_or_default();
 
     for result in results {
         for (source, paragraph) in result? {
             paragraps_to_sourcefile
                 .entry(paragraph)
-                .or_insert_with(|| BumpVec::new_in(main_arena))
+                .or_insert_with(|| BumpVec::new_in(main_interner.get_arena()))
                 .push(source.clone());
         }
     }
@@ -465,13 +470,13 @@ fn extract_markdown_paragraphs<'a>(
 }
 
 fn match_all_paragraphs(base_path: PathBuf, sources_path: PathBuf) -> Result<(), Error> {
-    let arenas = ThreadLocal::new();
+    let interners = ThreadLocal::new();
 
     println!("Reading files");
-    let html_result = extract_html_links::<UsedLinkCollector>(&arenas, &base_path, true, true)?;
+    let html_result = extract_html_links::<UsedLinkCollector>(&interners, &base_path, true, true)?;
 
     println!("Reading source files");
-    let paragraps_to_sourcefile = extract_markdown_paragraphs(&arenas, &sources_path)?;
+    let paragraps_to_sourcefile = extract_markdown_paragraphs(&interners, &sources_path)?;
 
     println!("Calculating");
     let mut total_links = 0;
