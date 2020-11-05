@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Error};
 use bumpalo::collections::Vec as BumpVec;
@@ -358,17 +359,19 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
     check_anchors: bool,
     get_paragraphs: bool,
 ) -> Result<HtmlResult<C>, Error> {
+    let collector = Mutex::new(C::new());
+
     let result: Result<_, Error> = walk_files(base_path)
         .try_fold(
             // apparently can't use arena allocations here because that would make values !Send
             // also because quick-xml specifically wants std vec
-            || (Vec::new(), Vec::new(), C::new(), 0, 0),
-            |(mut xml_buf, mut link_buf, mut collector, mut documents_count, mut file_count),
+            || (Vec::new(), Vec::new(), 0, 0),
+            |(mut xml_buf, mut link_buf, mut documents_count, mut file_count),
              entry| {
                 let arena = arenas.get_or_default();
                 let document = Document::new(&arena, &base_path, arena.alloc(entry.path()));
 
-                collector.ingest(Link::Defines(DefinedLink {
+                collector.lock().unwrap().ingest(Link::Defines(DefinedLink {
                     href: document.href,
                 }));
                 file_count += 1;
@@ -379,7 +382,7 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
                     .and_then(|extension| Some(HTML_FILES.contains(&extension.to_str()?)))
                     .unwrap_or(false)
                 {
-                    return Ok((xml_buf, link_buf, collector, documents_count, file_count));
+                    return Ok((xml_buf, link_buf, documents_count, file_count));
                 }
 
                 document
@@ -393,34 +396,38 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
                     .with_context(|| format!("Failed to read file {}", document.path.display()))?;
 
                 xml_buf.clear();
-                for link in link_buf.drain(..) {
-                    collector.ingest(link);
+
+                {
+                    let mut collector = collector.lock().unwrap();
+                    for link in link_buf.drain(..) {
+                        collector.ingest(link);
+                    }
                 }
 
                 documents_count += 1;
 
-                Ok((xml_buf, link_buf, collector, documents_count, file_count))
+                Ok((xml_buf, link_buf, documents_count, file_count))
             },
         )
         .map(|result| {
             result.map(
-                |(_xml_buf, _link_buf, collector, documents_count, file_count)| {
-                    (collector, documents_count, file_count)
+                |(_xml_buf, _link_buf, documents_count, file_count)| {
+                    (documents_count, file_count)
                 },
             )
         })
         .try_reduce(
-            || (C::new(), 0, 0),
-            |(mut collector, mut documents_count, mut file_count),
-             (collector2, documents_count2, file_count2)| {
-                collector.merge(collector2);
+            || (0, 0),
+            |(mut documents_count, mut file_count),
+             (documents_count2, file_count2)| {
                 documents_count += documents_count2;
                 file_count += file_count2;
-                Ok((collector, documents_count, file_count))
+                Ok((documents_count, file_count))
             },
         );
 
-    let (collector, documents_count, file_count) = result?;
+    let (documents_count, file_count) = result?;
+    let collector = collector.into_inner().unwrap();
 
     Ok(HtmlResult {
         collector,
