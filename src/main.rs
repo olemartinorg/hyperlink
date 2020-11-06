@@ -354,74 +354,58 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
     check_anchors: bool,
     get_paragraphs: bool,
 ) -> Result<HtmlResult<C>, Error> {
-    let result: Result<_, Error> = walk_files(base_path)
-        .try_fold(
-            // apparently can't use arena allocations here because that would make values !Send
-            // also because quick-xml specifically wants std vec
-            || (Vec::new(), Vec::new(), C::new(), 0, 0),
-            |(mut xml_buf, mut link_buf, mut collector, mut documents_count, mut file_count),
-             entry| {
-                let arena = arenas.get_or_default();
-                let document = Document::new(&arena, &base_path, arena.alloc(entry.path()));
+    let collector = walk_files(base_path)
+        .flat_map(|entry| {
+            let mut xml_buf = Vec::new();
+            let mut link_buf = Vec::new();
 
-                collector.ingest(Link::Defines(DefinedLink {
-                    href: document.href,
-                }));
-                file_count += 1;
+            let arena = arenas.get_or_default();
+            let document = Document::new(&arena, &base_path, arena.alloc(entry.path()));
 
-                if !document
-                    .path
+            link_buf.push(Link::Defines(DefinedLink {
+                href: document.href,
+            }));
+
+            if !document
+                .path
                     .extension()
-                    .and_then(|extension| Some(HTML_FILES.contains(&extension.to_str()?)))
+                    .and_then(|extension| Some(HTML_FILES.contains(&extension.to_str().unwrap())))
                     .unwrap_or(false)
-                {
-                    return Ok((xml_buf, link_buf, collector, documents_count, file_count));
-                }
+            {
+                return link_buf;
+            }
 
-                document
-                    .links::<ParagraphHasher>(
-                        arena,
-                        &mut xml_buf,
-                        &mut link_buf,
-                        check_anchors,
-                        get_paragraphs,
-                    )
-                    .with_context(|| format!("Failed to read file {}", document.path.display()))?;
+            document
+                .links::<ParagraphHasher>(
+                    arena,
+                    &mut xml_buf,
+                    &mut link_buf,
+                    check_anchors,
+                    get_paragraphs,
+                )
+                .with_context(|| format!("Failed to read file {}", document.path.display())).unwrap();
 
-                xml_buf.clear();
-                for link in link_buf.drain(..) {
-                    collector.ingest(link);
-                }
-
-                documents_count += 1;
-
-                Ok((xml_buf, link_buf, collector, documents_count, file_count))
+            link_buf
+        })
+        .fold(
+            || C::new(),
+            |mut collector, link| {
+                collector.ingest(link);
+                collector
             },
         )
-        .map(|result| {
-            result.map(
-                |(_xml_buf, _link_buf, collector, documents_count, file_count)| {
-                    (collector, documents_count, file_count)
-                },
-            )
-        })
-        .try_reduce(
-            || (C::new(), 0, 0),
-            |(mut collector, mut documents_count, mut file_count),
-             (collector2, documents_count2, file_count2)| {
-                collector.merge(collector2);
-                documents_count += documents_count2;
-                file_count += file_count2;
-                Ok((collector, documents_count, file_count))
-            },
+        .reduce(
+            || C::new(),
+            |mut c, c2| {
+                c.merge(c2);
+                c
+            }
         );
-
-    let (collector, documents_count, file_count) = result?;
 
     Ok(HtmlResult {
         collector,
-        documents_count,
-        file_count,
+        documents_count: 0,
+        file_count: 0,
     })
 }
 
