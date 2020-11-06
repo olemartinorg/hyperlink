@@ -1,13 +1,15 @@
 use std::fmt;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::Path;
 use std::str;
 
 use anyhow::Error;
 use bumpalo::collections::String as BumpString;
-use quick_xml::events::Event;
-use quick_xml::Reader;
+use html5ever::tendril::{ByteTendril, ReadExt};
+use html5ever::tokenizer::{
+    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerResult,
+};
 
 use crate::paragraph::ParagraphWalker;
 
@@ -15,7 +17,7 @@ static BAD_SCHEMAS: &[&str] = &[
     "http://", "https://", "irc://", "ftp://", "mailto:", "data:",
 ];
 
-static PARAGRAPH_TAGS: &[&[u8]] = &[b"p", b"li", b"dt", b"dd"];
+static PARAGRAPH_TAGS: &[&str] = &["p", "li", "dt", "dd"];
 
 #[inline]
 fn push_and_canonicalize(base: &mut BumpString<'_>, path: &str) {
@@ -205,7 +207,6 @@ impl<'a> Document<'a> {
     pub fn links<'b, 'link, P: ParagraphWalker>(
         &self,
         arena: &'b bumpalo::Bump,
-        xml_buf: &mut Vec<u8>,
         sink: &mut Vec<Link<'link, P::Paragraph>>,
         check_anchors: bool,
         get_paragraphs: bool,
@@ -216,7 +217,6 @@ impl<'a> Document<'a> {
     {
         self.links_from_read::<_, P>(
             arena,
-            xml_buf,
             sink,
             fs::File::open(&self.path)?,
             check_anchors,
@@ -227,9 +227,8 @@ impl<'a> Document<'a> {
     fn links_from_read<'b, 'link, R: Read, P: ParagraphWalker>(
         &self,
         arena: &'b bumpalo::Bump,
-        xml_buf: &mut Vec<u8>,
         sink: &mut Vec<Link<'link, P::Paragraph>>,
-        read: R,
+        mut read: R,
         check_anchors: bool,
         get_paragraphs: bool,
     ) -> Result<(), Error>
@@ -237,113 +236,117 @@ impl<'a> Document<'a> {
         'a: 'link,
         'b: 'link,
     {
-        let mut reader = Reader::from_reader(BufReader::new(read));
-        reader.trim_text(true);
-        reader.expand_empty_elements(true);
-        reader.check_end_names(false);
+        let mut bytes = ByteTendril::new();
+        read.read_to_tendril(&mut bytes)?;
+
+        let mut buffer_queue = BufferQueue::new();
+        buffer_queue.push_back(
+            bytes.try_reinterpret()
+            .map_err(|_| anyhow::anyhow!("file contained invalid utf8"))?
+        );
 
         let mut paragraph_walker = P::new();
-
         let mut last_paragraph_i = sink.len();
         let mut in_paragraph = false;
 
-        loop {
-            match reader.read_event(xml_buf)? {
-                Event::Eof => break,
-                Event::Start(ref e) => {
-                    if PARAGRAPH_TAGS.contains(&e.name()) {
-                        in_paragraph = true;
-                        last_paragraph_i = sink.len();
-                        paragraph_walker.finish_paragraph();
-                    }
+        let sink_fn = FnSink(|token, _line_number| {
+            match token {
+                Token::TagToken(tag) => match tag.kind {
+                    TagKind::StartTag => {
+                        if PARAGRAPH_TAGS.contains(&&*tag.name) {
+                            in_paragraph = true;
+                            last_paragraph_i = sink.len();
+                            paragraph_walker.finish_paragraph();
+                        }
 
-                    macro_rules! extract_used_link {
-                        ($attr_name:expr) => {
-                            for attr in e.html_attributes() {
-                                let attr = attr?;
-
-                                if attr.key == $attr_name
-                                    && BAD_SCHEMAS
-                                        .iter()
-                                        .all(|schema| !attr.value.starts_with(schema.as_bytes()))
-                                {
-                                    sink.push(Link::Uses(UsedLink {
-                                        href: self.join(
-                                            arena,
-                                            check_anchors,
-                                            str::from_utf8(&attr.unescaped_value()?)?,
-                                        ),
-                                        path: &self.path,
-                                        paragraph: None,
-                                    }));
-                                }
-                            }
-                        };
-                    }
-
-                    macro_rules! extract_anchor_def {
-                        ($attr_name:expr) => {
-                            if check_anchors {
-                                for attr in e.html_attributes() {
-                                    let attr = attr?;
-
-                                    if attr.key == $attr_name {
-                                        let mut href = BumpString::new_in(arena);
-                                        href.push('#');
-                                        href.push_str(str::from_utf8(&attr.value)?);
-
-                                        sink.push(Link::Defines(DefinedLink {
-                                            href: self.join(
-                                                arena,
-                                                check_anchors,
-                                                href.into_bump_str(),
-                                            ),
+                        macro_rules! extract_used_link {
+                            ($attr_name:expr) => {
+                                for attr in &tag.attrs {
+                                    if &*attr.name.local == $attr_name
+                                        && BAD_SCHEMAS
+                                            .iter()
+                                            .all(|schema| !attr.value.starts_with(schema))
+                                    {
+                                        sink.push(Link::Uses(UsedLink {
+                                            href: self.join(arena, check_anchors, &attr.value),
+                                            path: &self.path,
+                                            paragraph: None,
                                         }));
                                     }
                                 }
-                            }
-                        };
-                    }
-
-                    match e.name() {
-                        b"a" => {
-                            extract_used_link!(b"href");
-                            extract_anchor_def!(b"name");
+                            };
                         }
-                        b"img" => extract_used_link!(b"src"),
-                        b"link" => extract_used_link!(b"href"),
-                        b"script" => extract_used_link!(b"src"),
-                        b"iframe" => extract_used_link!(b"src"),
-                        b"area" => extract_used_link!(b"href"),
-                        b"object" => extract_used_link!(b"data"),
-                        _ => {}
-                    }
 
-                    extract_anchor_def!(b"id");
-                }
-                Event::End(e) if get_paragraphs => {
-                    if PARAGRAPH_TAGS.contains(&e.name()) {
-                        let paragraph = paragraph_walker.finish_paragraph();
-                        if in_paragraph {
-                            for link in &mut sink[last_paragraph_i..] {
-                                match link {
-                                    Link::Uses(ref mut x) => {
-                                        x.paragraph = Some(paragraph.clone());
+                        macro_rules! extract_anchor_def {
+                            ($attr_name:expr) => {
+                                if check_anchors {
+                                    for attr in &tag.attrs {
+                                        if &attr.name.local == $attr_name {
+                                            let mut href = BumpString::new_in(arena);
+                                            href.push('#');
+                                            href.push_str(&attr.value);
+
+                                            sink.push(Link::Defines(DefinedLink {
+                                                href: self.join(
+                                                    arena,
+                                                    check_anchors,
+                                                    href.into_bump_str(),
+                                                ),
+                                            }));
+                                        }
                                     }
-                                    Link::Defines(_) => {}
                                 }
-                            }
-                            in_paragraph = false;
+                            };
                         }
-                        last_paragraph_i = sink.len();
+
+                        match &*tag.name {
+                            "a" => {
+                                extract_used_link!("href");
+                                extract_anchor_def!("name");
+                            }
+                            "img" => extract_used_link!("src"),
+                            "link" => extract_used_link!("href"),
+                            "script" => extract_used_link!("src"),
+                            "iframe" => extract_used_link!("src"),
+                            "area" => extract_used_link!("href"),
+                            "object" => extract_used_link!("data"),
+                            _ => {}
+                        }
+
+                        extract_anchor_def!("id");
                     }
+                    TagKind::EndTag => {
+                        if get_paragraphs && PARAGRAPH_TAGS.contains(&&*tag.name) {
+                            let paragraph = paragraph_walker.finish_paragraph();
+                            if in_paragraph {
+                                for link in &mut sink[last_paragraph_i..] {
+                                    match link {
+                                        Link::Uses(ref mut x) => {
+                                            x.paragraph = Some(paragraph.clone());
+                                        }
+                                        Link::Defines(_) => {}
+                                    }
+                                }
+                                in_paragraph = false;
+                            }
+                            last_paragraph_i = sink.len();
+                        }
+                    }
+                },
+                Token::CharacterTokens(string) if get_paragraphs && in_paragraph => {
+                    paragraph_walker.update(&string);
                 }
-                Event::Text(e) if get_paragraphs && in_paragraph => {
-                    // XXX: Unescape properly https://github.com/tafia/quick-xml/issues/238
-                    let text = e.unescaped().unwrap_or_else(|_| e.escaped().into());
-                    paragraph_walker.update(str::from_utf8(&text)?);
-                }
-                _ => {}
+                _ => (),
+            }
+
+            TokenSinkResult::Continue
+        });
+
+        let mut tokenizer = Tokenizer::new(sink_fn, Default::default());
+
+        loop {
+            if matches!(tokenizer.feed(&mut buffer_queue), TokenizerResult::Done) {
+                break;
             }
         }
 
@@ -482,4 +485,17 @@ fn test_document_join_bare_html() {
         doc.join(&arena, true, "/platforms/ruby?bar=1#foo"),
         Href("platforms/ruby#foo")
     );
+}
+
+struct FnSink<F>(F);
+
+impl<F> TokenSink for FnSink<F>
+where
+    F: FnMut(Token, u64) -> TokenSinkResult<()>,
+{
+    type Handle = ();
+
+    fn process_token(&mut self, token: Token, line_number: u64) -> TokenSinkResult<Self::Handle> {
+        (self.0)(token, line_number)
+    }
 }

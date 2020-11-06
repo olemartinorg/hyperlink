@@ -277,13 +277,8 @@ fn dump_paragraphs(path: PathBuf) -> Result<(), Error> {
         Some(x) if HTML_FILES.contains(&x) => {
             let document = Document::new(&arena, Path::new(""), &path);
             let mut links = Vec::new();
-            document.links::<DebugParagraphWalker<ParagraphHasher>>(
-                &arena,
-                &mut Vec::new(),
-                &mut links,
-                false,
-                true,
-            )?;
+            document
+                .links::<DebugParagraphWalker<ParagraphHasher>>(&arena, &mut links, false, true)?;
             links
                 .into_iter()
                 .filter_map(|link| link.into_paragraph())
@@ -357,10 +352,8 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
     let result: Result<_, Error> = walk_files(base_path)
         .try_fold(
             // apparently can't use arena allocations here because that would make values !Send
-            // also because quick-xml specifically wants std vec
-            || (Vec::new(), Vec::new(), C::new(), 0, 0),
-            |(mut xml_buf, mut link_buf, mut collector, mut documents_count, mut file_count),
-             entry| {
+            || (Vec::new(), C::new(), 0, 0),
+            |(mut link_buf, mut collector, mut documents_count, mut file_count), entry| {
                 let arena = arenas.get_or_default();
                 let document = Document::new(&arena, &base_path, arena.alloc(entry.path()));
 
@@ -375,35 +368,26 @@ fn extract_html_links<'a, C: LinkCollector<'a>>(
                     .and_then(|extension| Some(HTML_FILES.contains(&extension.to_str()?)))
                     .unwrap_or(false)
                 {
-                    return Ok((xml_buf, link_buf, collector, documents_count, file_count));
+                    return Ok((link_buf, collector, documents_count, file_count));
                 }
 
                 document
-                    .links::<ParagraphHasher>(
-                        arena,
-                        &mut xml_buf,
-                        &mut link_buf,
-                        check_anchors,
-                        get_paragraphs,
-                    )
+                    .links::<ParagraphHasher>(arena, &mut link_buf, check_anchors, get_paragraphs)
                     .with_context(|| format!("Failed to read file {}", document.path.display()))?;
 
-                xml_buf.clear();
                 for link in link_buf.drain(..) {
                     collector.ingest(link);
                 }
 
                 documents_count += 1;
 
-                Ok((xml_buf, link_buf, collector, documents_count, file_count))
+                Ok((link_buf, collector, documents_count, file_count))
             },
         )
         .map(|result| {
-            result.map(
-                |(_xml_buf, _link_buf, collector, documents_count, file_count)| {
-                    (collector, documents_count, file_count)
-                },
-            )
+            result.map(|(_link_buf, collector, documents_count, file_count)| {
+                (collector, documents_count, file_count)
+            })
         })
         .try_reduce(
             || (C::new(), 0, 0),
