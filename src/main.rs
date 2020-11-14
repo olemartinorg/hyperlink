@@ -2,9 +2,9 @@ mod collector;
 mod html;
 mod markdown;
 mod paragraph;
+mod trie;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -246,9 +246,6 @@ where
         println!("Found {} bad anchors", bad_anchors_count);
     }
 
-    // We're about to exit the program and leaking the memory is faster than running drop
-    mem::forget(html_result);
-
     if bad_links_count > 0 {
         process::exit(1);
     }
@@ -318,7 +315,7 @@ struct HtmlResult<C> {
 
 fn walk_files(base_path: &Path) -> impl ParallelIterator<Item = jwalk::DirEntry<((), ())>> {
     let entries = WalkDir::new(&base_path)
-        .sort(true) // helps branch predictor (?)
+        .sort(true)
         .process_read_dir(|_, children| {
             children.retain(|dir_entry_result| {
                 let entry = match dir_entry_result.as_ref() {

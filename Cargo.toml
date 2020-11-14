@@ -18,3 +18,4 @@ quick-xml = { version = "0.20.0", git = "https://github.com/untitaker/quick-xml"
 jwalk = "0.5.1"
 patricia_tree = "0.2.0"
 bumpalo = { version = "3.4.0", features = ["collections"] }
+smallvec = "1.4.2"

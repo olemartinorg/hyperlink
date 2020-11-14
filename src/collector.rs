@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use patricia_tree::PatriciaMap;
-
 use crate::html::{Href, Link, UsedLink};
+use crate::trie::Trie;
 
 #[cfg(unix)]
 fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
@@ -75,13 +74,13 @@ impl<P: Send> LinkCollector<P> for UsedLinkCollector<P> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum LinkState<P> {
     /// We have observed a DefinedLink for this href
     Defined,
     /// We have not *yet* observed a DefinedLink and therefore need to keep track of all link
     /// usages for potential error reporting.
-    Undefined(PatriciaMap<Option<P>>), // (path) -> paragraph
+    Undefined(Trie<Option<P>>), // (path) -> paragraph
 }
 
 impl<P: Copy> LinkState<P> {
@@ -104,14 +103,14 @@ impl<P: Copy> LinkState<P> {
 
 /// Link collector used for actual link checking. Keeps track of broken links only.
 pub struct BrokenLinkCollector<P> {
-    links: PatriciaMap<LinkState<P>>,
+    links: Trie<LinkState<P>>,
     used_link_count: usize,
 }
 
 impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     fn new() -> Self {
         BrokenLinkCollector {
-            links: PatriciaMap::new(),
+            links: Trie::new(),
             used_link_count: 0,
         }
     }
@@ -123,13 +122,13 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
                 if let Some(state) = self.links.get_mut(&used_link.href) {
                     state.add_usage(&used_link);
                 } else {
-                    let mut state = LinkState::Undefined(PatriciaMap::new());
+                    let mut state = LinkState::Undefined(Trie::new());
                     state.add_usage(&used_link);
-                    self.links.insert(used_link.href, state);
+                    self.links.insert(&used_link.href, state);
                 }
             }
             Link::Defines(defined_link) => {
-                self.links.insert(defined_link.href, LinkState::Defined);
+                self.links.insert(&defined_link.href, LinkState::Defined);
             }
         }
     }
@@ -141,7 +140,7 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
             if let Some(state) = self.links.get_mut(&href) {
                 state.update(other_state);
             } else {
-                self.links.insert(href, other_state);
+                self.links.insert(&href, other_state);
             }
         }
     }
@@ -154,10 +153,10 @@ pub struct BrokenLink<P> {
 }
 
 impl<P: Copy + PartialEq> BrokenLinkCollector<P> {
-    pub fn get_broken_links(&self, check_anchors: bool) -> impl Iterator<Item = BrokenLink<P>> {
+    pub fn get_broken_links(self, check_anchors: bool) -> impl Iterator<Item = BrokenLink<P>> {
         let mut broken_links = Vec::new();
 
-        for (href, state) in self.links.iter() {
+        for (href, state) in self.links.clone() {
             if let LinkState::Undefined(links) = state {
                 let href = unsafe { String::from_utf8_unchecked(href) };
                 let hard_404 = if check_anchors {
@@ -169,7 +168,7 @@ impl<P: Copy + PartialEq> BrokenLinkCollector<P> {
                     true
                 };
 
-                for (path, &paragraph) in links.iter() {
+                for (path, paragraph) in links {
                     broken_links.push(BrokenLink {
                         hard_404,
                         link: OwnedUsedLink {
