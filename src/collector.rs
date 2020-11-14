@@ -74,7 +74,7 @@ impl<P: Send> LinkCollector<P> for UsedLinkCollector<P> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum LinkState<P> {
     /// We have observed a DefinedLink for this href
     Defined,
@@ -104,21 +104,27 @@ impl<P: Copy> LinkState<P> {
 /// Link collector used for actual link checking. Keeps track of broken links only.
 pub struct BrokenLinkCollector<P> {
     links: Trie<LinkState<P>>,
-    used_link_count: usize,
+    used_links_count: usize,
+}
+
+impl<P> BrokenLinkCollector<P> {
+    pub fn debug_trie(&self) -> String {
+        crate::trie::debug_trie(&self.links, |_| format!("sub-trie"))
+    }
 }
 
 impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     fn new() -> Self {
         BrokenLinkCollector {
             links: Trie::new(),
-            used_link_count: 0,
+            used_links_count: 0,
         }
     }
 
     fn ingest<'a>(&mut self, link: Link<'a, P>) {
         match link {
             Link::Uses(used_link) => {
-                self.used_link_count += 1;
+                self.used_links_count += 1;
                 if let Some(state) = self.links.get_mut(&used_link.href) {
                     state.add_usage(&used_link);
                 } else {
@@ -134,7 +140,7 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     }
 
     fn merge(&mut self, other: Self) {
-        self.used_link_count += other.used_link_count;
+        self.used_links_count += other.used_links_count;
 
         for (href, other_state) in other.links {
             if let Some(state) = self.links.get_mut(&href) {
@@ -185,6 +191,6 @@ impl<P: Copy + PartialEq> BrokenLinkCollector<P> {
     }
 
     pub fn used_links_count(&self) -> usize {
-        self.used_link_count
+        self.used_links_count
     }
 }

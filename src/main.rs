@@ -83,6 +83,13 @@ enum Subcommand {
         base_path: PathBuf,
         sources_path: PathBuf,
     },
+
+    /// Dump internal datastructure containing all collected links.
+    ///
+    /// NOTE: This is a tool for debugging and development.
+    DumpCollectorTrie {
+        base_path: PathBuf,
+    }
 }
 
 fn main() -> Result<(), Error> {
@@ -111,6 +118,9 @@ fn main() -> Result<(), Error> {
             sources_path,
         }) => {
             return match_all_paragraphs(base_path, sources_path);
+        }
+        Some(Subcommand::DumpCollectorTrie { base_path }) => {
+            return dump_collector_trie(base_path);
         }
         None => {}
     }
@@ -477,6 +487,15 @@ fn extract_markdown_paragraphs<P: ParagraphWalker>(
     }
 
     Ok(paragraps_to_sourcefile)
+}
+
+fn dump_collector_trie(base_path: PathBuf) -> Result<(), Error> {
+    println!("Reading files");
+    let html_result =
+        extract_html_links::<BrokenLinkCollector<_>, ParagraphHasher>(&base_path, true, true)?;
+
+    println!("{}", html_result.collector.debug_trie());
+    Ok(())
 }
 
 fn match_all_paragraphs(base_path: PathBuf, sources_path: PathBuf) -> Result<(), Error> {

@@ -3,7 +3,7 @@ use std::mem;
 
 use smallvec::SmallVec;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Trie<T> {
     value: Option<T>,
     label: SmallVec<[u8; 12]>,
@@ -160,70 +160,70 @@ impl<K: AsRef<[u8]>, V> Extend<(K, V)> for Trie<V> {
     }
 }
 
+
+
+fn debug_trie_impl<T, F: Copy + Fn(&T) -> String>(tree: &Trie<T>, value_printer: F) -> Vec<String> {
+    let mut rv = Vec::new();
+
+    for (i, &c) in tree.label.iter().enumerate() {
+        rv.push(format!("{}", c as char));
+
+        if let Some(child) = tree.lower_than.get(&(i + 1)) {
+            if let Some(value) = &child.value {
+                rv.push(format!(" -> {}", value_printer(value)));
+            }
+            for line in debug_trie_impl(child, value_printer) {
+                rv.push(format!(" < {}", line));
+            }
+        }
+
+        if let Some(child) = tree.bigger_than.get(&(i + 1)) {
+            if let Some(value) = &child.value {
+                rv.push(format!(" -> {}", value_printer(value)));
+            }
+            for line in debug_trie_impl(child, value_printer) {
+                rv.push(format!(" > {}", line));
+            }
+        }
+    }
+
+    for child in tree.lower_than.get(&0).into_iter().chain(tree.bigger_than.get(&0)) {
+        let max_len = rv.iter().map(String::len).max().unwrap_or(0) + 4;
+        for line in &mut rv {
+            for _ in 0..(max_len - line.len()) {
+                line.push(' ');
+            }
+        }
+
+        let child_rv = debug_trie_impl(child, value_printer);
+
+        if child_rv.len() > rv.len() {
+            for _ in 0..(child_rv.len() - rv.len()) {
+                rv.push(" ".to_owned().repeat(max_len));
+            }
+        }
+
+        for (line, child_line) in rv.iter_mut().zip(child_rv.iter()) {
+            line.push_str(&child_line);
+        }
+    }
+
+    rv
+}
+
+pub fn debug_trie<T, F: Copy + Fn(&T) -> String>(tree: &Trie<T>, value_printer: F) -> String {
+    let mut rv = String::new();
+    for line in debug_trie_impl(tree, value_printer) {
+        rv.push_str(line.trim_end());
+        rv.push('\n');
+    }
+
+    rv
+}
+
 #[cfg(test)]
 mod test {
-    use std::fmt::Debug;
-
     use super::*;
-
-    fn debug_tree_impl<T: Debug>(tree: &Trie<T>) -> Vec<String> {
-        let mut rv = Vec::new();
-
-        for (i, &c) in tree.label.iter().enumerate() {
-            rv.push(format!("{}", c as char));
-
-            if let Some(child) = tree.lower_than.get(&(i + 1)) {
-                if let Some(value) = &child.value {
-                    rv.push(format!(" -> {:?}", value));
-                }
-                for line in debug_tree_impl(child) {
-                    rv.push(format!(" < {}", line));
-                }
-            }
-
-            if let Some(child) = tree.bigger_than.get(&(i + 1)) {
-                if let Some(value) = &child.value {
-                    rv.push(format!(" -> {:?}", value));
-                }
-                for line in debug_tree_impl(child) {
-                    rv.push(format!(" > {}", line));
-                }
-            }
-        }
-
-        for child in tree.lower_than.get(&0).into_iter().chain(tree.bigger_than.get(&0)) {
-            let max_len = rv.iter().map(String::len).max().unwrap_or(0) + 4;
-            for line in &mut rv {
-                for _ in 0..(max_len - line.len()) {
-                    line.push(' ');
-                }
-            }
-
-            let child_rv = debug_tree_impl(child);
-
-            if child_rv.len() > rv.len() {
-                for _ in 0..(child_rv.len() - rv.len()) {
-                    rv.push(" ".to_owned().repeat(max_len));
-                }
-            }
-
-            for (line, child_line) in rv.iter_mut().zip(child_rv.iter()) {
-                line.push_str(&child_line);
-            }
-        }
-
-        rv
-    }
-
-    fn debug_tree<T: Debug>(tree: &Trie<T>) -> String {
-        let mut rv = String::new();
-        for line in debug_tree_impl(tree) {
-            rv.push_str(line.trim_end());
-            rv.push('\n');
-        }
-
-        rv
-    }
 
     #[test]
     fn test_basic() {
@@ -241,7 +241,7 @@ mod test {
         assert_eq!(map.get(b"blabar"), Some(&"blabla"));
 
      
-        assert_eq!(debug_tree(&map), "\
+        assert_eq!(debug_trie(&map, |x| format!("{:?}", x)), "\
 f                  b
 o                  l
 o                  a
