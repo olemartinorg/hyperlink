@@ -87,9 +87,7 @@ enum Subcommand {
     /// Dump internal datastructure containing all collected links.
     ///
     /// NOTE: This is a tool for debugging and development.
-    DumpCollectorTrie {
-        base_path: PathBuf,
-    }
+    DumpCollectorTrie { base_path: PathBuf },
 }
 
 fn main() -> Result<(), Error> {

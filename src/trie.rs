@@ -160,8 +160,6 @@ impl<K: AsRef<[u8]>, V> Extend<(K, V)> for Trie<V> {
     }
 }
 
-
-
 fn debug_trie_impl<T, F: Copy + Fn(&T) -> String>(tree: &Trie<T>, value_printer: F) -> Vec<String> {
     let mut rv = Vec::new();
 
@@ -187,7 +185,12 @@ fn debug_trie_impl<T, F: Copy + Fn(&T) -> String>(tree: &Trie<T>, value_printer:
         }
     }
 
-    for child in tree.lower_than.get(&0).into_iter().chain(tree.bigger_than.get(&0)) {
+    for child in tree
+        .lower_than
+        .get(&0)
+        .into_iter()
+        .chain(tree.bigger_than.get(&0))
+    {
         let max_len = rv.iter().map(String::len).max().unwrap_or(0) + 4;
         for line in &mut rv {
             for _ in 0..(max_len - line.len()) {
@@ -240,8 +243,9 @@ mod test {
         assert_eq!(map.get(b"foobar"), Some(&"barbar"));
         assert_eq!(map.get(b"blabar"), Some(&"blabla"));
 
-     
-        assert_eq!(debug_trie(&map, |x| format!("{:?}", x)), "\
+        assert_eq!(
+            debug_trie(&map, |x| format!("{:?}", x)),
+            "\
 f                  b
 o                  l
 o                  a
@@ -258,7 +262,8 @@ b
 a
 r
  -> \"barbar\"
-");
+"
+        );
 
         assert_eq!(
             map.into_iter().collect::<Vec<_>>(),
