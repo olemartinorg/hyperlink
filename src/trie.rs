@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::mem;
 
 use smallvec::SmallVec;
@@ -109,7 +109,7 @@ impl<T> IntoIterator for Trie<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         IntoIter {
-            next_tries: vec![],
+            next_tries: VecDeque::new(),
             current_trie: Some((vec![], self)),
             next_value: None,
         }
@@ -117,7 +117,7 @@ impl<T> IntoIterator for Trie<T> {
 }
 
 pub struct IntoIter<T> {
-    next_tries: Vec<(Vec<u8>, Trie<T>)>,
+    next_tries: VecDeque<(Vec<u8>, Trie<T>)>,
     current_trie: Option<(Vec<u8>, Trie<T>)>,
     next_value: Option<(Vec<u8>, T)>,
 }
@@ -141,9 +141,9 @@ impl<T> Iterator for IntoIter<T> {
                 {
                     let mut k = prefix.clone();
                     k.extend(&trie.label[..diverged_at]);
-                    self.next_tries.push((k, child));
+                    self.next_tries.push_back((k, child));
                 }
-            } else if let Some(next_trie) = self.next_tries.pop() {
+            } else if let Some(next_trie) = self.next_tries.pop_front() {
                 self.current_trie = Some(next_trie);
             } else {
                 return None;
@@ -268,11 +268,11 @@ r
         assert_eq!(
             map.into_iter().collect::<Vec<_>>(),
             vec![
-                (b"foobar".to_vec(), "barbar"),
                 (b"foo".to_vec(), "bar"),
-                (b"fooxxx".to_vec(), "barbam"),
-                (b"fooaaa".to_vec(), "barbam"),
+                (b"foobar".to_vec(), "barbar"),
                 (b"blabar".to_vec(), "blabla"),
+                (b"fooaaa".to_vec(), "barbam"),
+                (b"fooxxx".to_vec(), "barbam"),
             ]
         );
     }
