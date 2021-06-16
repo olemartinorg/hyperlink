@@ -2,6 +2,7 @@ mod collector;
 mod html;
 mod markdown;
 mod paragraph;
+mod allocator;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;

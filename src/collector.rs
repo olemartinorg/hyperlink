@@ -4,6 +4,7 @@ use std::sync::Arc;
 use patricia_tree::PatriciaMap;
 
 use crate::html::{Href, Link, UsedLink};
+use crate::allocator::BumpaloPatriciaAllocator;
 
 impl<'a> AsRef<[u8]> for Href<'a> {
     fn as_ref(&self) -> &[u8] {
@@ -80,14 +81,14 @@ impl<P: Copy> LinkState<P> {
 
 /// Link collector used for actual link checking. Keeps track of broken links only.
 pub struct BrokenLinkCollector<P> {
-    links: PatriciaMap<LinkState<P>>,
+    links: PatriciaMap<LinkState<P>, BumpaloPatriciaAllocator>,
     used_link_count: usize,
 }
 
 impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     fn new() -> Self {
         BrokenLinkCollector {
-            links: PatriciaMap::new(),
+            links: PatriciaMap::new_in(BumpaloPatriciaAllocator::default()),
             used_link_count: 0,
         }
     }
