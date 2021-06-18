@@ -3,7 +3,7 @@ use std::alloc::{GlobalAlloc, Layout};
 
 use bumpalo::Bump;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct BumpaloPatriciaAllocator(Rc<Bump>);
 
 unsafe impl GlobalAlloc for BumpaloPatriciaAllocator {
