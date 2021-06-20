@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::mem;
 
 use bumpalo::Bump;
 use patricia_tree::PatriciaMap;
@@ -13,8 +14,8 @@ impl<'a> AsRef<[u8]> for Href<'a> {
     }
 }
 
-pub trait LinkCollector<'a, P: Send>: Send {
-    fn new(bump: &'a Bump) -> Self;
+pub trait LinkCollector<P: Send>: Send {
+        fn new() -> Self;
     fn ingest(&mut self, link: Link<'_, P>);
     fn merge(&mut self, other: Self);
 }
@@ -31,8 +32,8 @@ pub struct UsedLinkCollector<P> {
     pub used_links: Vec<OwnedUsedLink<P>>,
 }
 
-impl<'a, P: Send> LinkCollector<'a, P> for UsedLinkCollector<P> {
-    fn new(_bump: &'a Bump) -> Self {
+impl<P: Send> LinkCollector<P> for UsedLinkCollector<P> {
+        fn new() -> Self {
         UsedLinkCollector {
             used_links: Vec::new(),
         }
@@ -81,15 +82,24 @@ impl<P: Copy> LinkState<P> {
 }
 
 /// Link collector used for actual link checking. Keeps track of broken links only.
-pub struct BrokenLinkCollector<'a, P> {
-    links: PatriciaMap<LinkState<P>, BumpaloPatriciaAllocator<'a>>,
+pub struct BrokenLinkCollector<P> {
+    links: PatriciaMap<LinkState<P>, BumpaloPatriciaAllocator<'static>>,
     used_link_count: usize,
+
+    #[allow(unused)]
+    bump: Box<Bump>,
 }
 
-impl<'a, P: Send + Copy> LinkCollector<'a, P> for BrokenLinkCollector<'a, P> {
-    fn new(bump: &'a Bump) -> Self {
+impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
+    fn new() -> Self {
+        let bump = Box::new(Bump::new());
+        let bump_ref: &'static Bump = unsafe {
+            mem::transmute::<&Bump, &'static Bump>(&bump)
+        };
+
         BrokenLinkCollector {
-            links: PatriciaMap::new_in(BumpaloPatriciaAllocator(bump)),
+            bump,
+            links: PatriciaMap::new_in(BumpaloPatriciaAllocator(bump_ref)),
             used_link_count: 0,
         }
     }
@@ -131,7 +141,7 @@ pub struct BrokenLink<P> {
     pub link: OwnedUsedLink<P>,
 }
 
-impl<'a, P: Copy + PartialEq> BrokenLinkCollector<'a, P> {
+impl<P: Copy + PartialEq> BrokenLinkCollector<P> {
     pub fn get_broken_links(&self, check_anchors: bool) -> impl Iterator<Item = BrokenLink<P>> {
         let mut broken_links = Vec::new();
 
