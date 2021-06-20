@@ -1,12 +1,11 @@
-use std::rc::Rc;
 use std::alloc::{GlobalAlloc, Layout};
 
 use bumpalo::Bump;
 
-#[derive(Debug, Clone, Default)]
-pub struct BumpaloPatriciaAllocator(Rc<Bump>);
+#[derive(Debug, Clone)]
+pub struct BumpaloPatriciaAllocator<'a>(pub &'a Bump);
 
-unsafe impl GlobalAlloc for BumpaloPatriciaAllocator {
+unsafe impl<'a> GlobalAlloc for BumpaloPatriciaAllocator<'a> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.0.alloc_layout(layout).as_ptr()
     }

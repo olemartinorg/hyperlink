@@ -1,8 +1,8 @@
+mod allocator;
 mod collector;
 mod html;
 mod markdown;
 mod paragraph;
-mod allocator;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
@@ -405,7 +405,7 @@ fn walk_files(base_path: &Path) -> impl ParallelIterator<Item = jwalk::DirEntry<
     entries.into_par_iter().with_min_len(min_len)
 }
 
-fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
+fn extract_html_links<'a, C: LinkCollector<'a, P::Paragraph>, P: ParagraphWalker>(
     base_path: &Path,
     check_anchors: bool,
     get_paragraphs: bool,
@@ -414,7 +414,12 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
         .try_fold(
             // apparently can't use arena allocations here because that would make values !Send
             // also because quick-xml specifically wants std vec
-            || (bumpalo::Bump::new(), Vec::new(), C::new(), 0, 0),
+            || {
+                let bump = Box::new(bumpalo::Bump::new());
+                let bump_ref: &'static bumpalo::Bump = unsafe { mem::transmute(&*bump) };
+
+                (bump, Vec::new(), C::new(bump_ref), 0, 0)
+            },
             |(mut arena, mut xml_buf, mut collector, mut documents_count, mut file_count),
              entry| {
                 let path = entry.path();
@@ -459,22 +464,27 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
             },
         )
         .map(|result| {
-            result.map(|(_, _, collector, documents_count, file_count)| {
-                (collector, documents_count, file_count)
+            result.map(|(arena, _, collector, documents_count, file_count)| {
+                (arena, collector, documents_count, file_count)
             })
         })
         .try_reduce(
-            || (C::new(), 0, 0),
-            |(mut collector, mut documents_count, mut file_count),
-             (collector2, documents_count2, file_count2)| {
+            || {
+                let bump = Box::new(bumpalo::Bump::new());
+                let bump_ref: &'static bumpalo::Bump = unsafe { mem::transmute(&*bump) };
+
+                (bump, C::new(bump_ref), 0, 0)
+            },
+            |(bump, mut collector, mut documents_count, mut file_count),
+             (_bump2, collector2, documents_count2, file_count2)| {
                 collector.merge(collector2);
                 documents_count += documents_count2;
                 file_count += file_count2;
-                Ok((collector, documents_count, file_count))
+                Ok((bump, collector, documents_count, file_count))
             },
         );
 
-    let (collector, documents_count, file_count) = result?;
+    let (_bump, collector, documents_count, file_count) = result?;
 
     Ok(HtmlResult {
         collector,
