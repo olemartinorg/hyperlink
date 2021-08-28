@@ -70,6 +70,17 @@ enum LinkState<'a, P: 'a> {
 unsafe impl<'a, P> Send for LinkState<'a, P> {}
 
 impl<'a, P: Copy> LinkState<'a, P> {
+    #[inline]
+    fn rebuild(self, bump: &'a Bump) -> Self {
+        match self {
+            LinkState::Defined => LinkState::Defined,
+            LinkState::Undefined(old_vec) => {
+                let new_vec = BumpVec::from_iter_in(old_vec, bump);
+                LinkState::Undefined(new_vec)
+            }
+        }
+    }
+
     fn add_usage(&mut self, link: &UsedLink<P>) {
         if let LinkState::Undefined(ref mut links) = self {
             links.push((link.path.clone(), link.paragraph));
@@ -136,7 +147,7 @@ impl<P: Send + Copy + PartialEq + 'static> LinkCollector<P> for BrokenLinkCollec
             if let Some(state) = self.links.get_mut(&href) {
                 state.update(other_state);
             } else {
-                self.links.insert(href, other_state);
+                self.links.insert(href, other_state.rebuild(self.get_bump_ref()));
             }
         }
     }
