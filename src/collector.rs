@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::mem;
 
 use bumpalo::Bump;
+use bumpalo::collections::Vec as BumpVec;
 use patricia_tree::PatriciaMap;
 
 use crate::allocator::BumpaloPatriciaAllocator;
@@ -55,15 +56,20 @@ impl<P: Send> LinkCollector<P> for UsedLinkCollector<P> {
 }
 
 #[derive(Debug)]
-enum LinkState<P> {
+enum LinkState<'a, P: 'a> {
     /// We have observed a DefinedLink for this href
     Defined,
     /// We have not *yet* observed a DefinedLink and therefore need to keep track of all link
     /// usages for potential error reporting.
-    Undefined(Vec<(Arc<PathBuf>, Option<P>)>),
+    Undefined(BumpVec<'a, (Arc<PathBuf>, Option<P>)>),
 }
 
-impl<P: Copy> LinkState<P> {
+// LinkState's BumpVec is naturally !Send because it points to a Bump, which is !Sync. However we
+// can guarantee that all LinkStates within the same Bump are owned by the same thread. When
+// they're all only accessible by one thread, the Bump does not need to be sync.
+unsafe impl<'a, P> Send for LinkState<'a, P> {}
+
+impl<'a, P: Copy> LinkState<'a, P> {
     fn add_usage(&mut self, link: &UsedLink<P>) {
         if let LinkState::Undefined(ref mut links) = self {
             links.push((link.path.clone(), link.paragraph));
@@ -82,15 +88,15 @@ impl<P: Copy> LinkState<P> {
 }
 
 /// Link collector used for actual link checking. Keeps track of broken links only.
-pub struct BrokenLinkCollector<P> {
-    links: PatriciaMap<LinkState<P>, BumpaloPatriciaAllocator<'static>>,
+pub struct BrokenLinkCollector<P: 'static> {
+    links: PatriciaMap<LinkState<'static, P>, BumpaloPatriciaAllocator<'static>>,
     used_link_count: usize,
 
     #[allow(unused)]
     bump: Box<Bump>,
 }
 
-impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
+impl<P: Send + Copy + PartialEq + 'static> LinkCollector<P> for BrokenLinkCollector<P> {
     fn new() -> Self {
         let bump = Box::new(Bump::new());
         let bump_ref: &'static Bump = unsafe {
@@ -111,7 +117,7 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
                 if let Some(state) = self.links.get_mut(&used_link.href) {
                     state.add_usage(&used_link);
                 } else {
-                    let mut state = LinkState::Undefined(Vec::new());
+                    let mut state = LinkState::Undefined(BumpVec::new_in(self.get_bump_ref()));
                     state.add_usage(&used_link);
                     self.links.insert(used_link.href, state);
                 }
@@ -123,6 +129,7 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     }
 
     fn merge(&mut self, other: Self) {
+        // TODO: rebuild tree here to avoid rellocation?
         self.used_link_count += other.used_link_count;
 
         for (href, other_state) in other.links {
@@ -141,7 +148,14 @@ pub struct BrokenLink<P> {
     pub link: OwnedUsedLink<P>,
 }
 
-impl<P: Copy + PartialEq> BrokenLinkCollector<P> {
+impl<P: Copy + PartialEq + 'static> BrokenLinkCollector<P> {
+    #[inline]
+    fn get_bump_ref(&self) -> &'static Bump {
+        unsafe {
+            mem::transmute::<&Bump, &'static Bump>(&self.bump)
+        }
+    }
+
     pub fn get_broken_links(&self, check_anchors: bool) -> impl Iterator<Item = BrokenLink<P>> {
         let mut broken_links = Vec::new();
 
