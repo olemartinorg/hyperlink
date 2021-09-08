@@ -2,6 +2,7 @@ mod collector;
 mod html;
 mod markdown;
 mod paragraph;
+mod reusablebufread;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
@@ -329,6 +330,7 @@ fn dump_paragraphs(path: PathBuf) -> Result<(), Error> {
             document.links::<DebugParagraphWalker<ParagraphHasher>>(
                 &arena,
                 &mut Vec::new(),
+                &mut reusablebufread::ReusableBufRead::new(),
                 &mut links,
                 false,
                 true,
@@ -413,8 +415,8 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
         .try_fold(
             // apparently can't use arena allocations here because that would make values !Send
             // also because quick-xml specifically wants std vec
-            || (bumpalo::Bump::new(), Vec::new(), C::new(), 0, 0),
-            |(mut arena, mut xml_buf, mut collector, mut documents_count, mut file_count),
+            || (bumpalo::Bump::new(), Vec::new(), reusablebufread::ReusableBufRead::new(), C::new(), 0, 0),
+            |(mut arena, mut xml_buf, mut read_buf, mut collector, mut documents_count, mut file_count),
              entry| {
                 let path = entry.path();
                 let document = Document::new(&base_path, &path);
@@ -430,7 +432,7 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
                     .and_then(|extension| Some(HTML_FILES.contains(&extension.to_str()?)))
                     .unwrap_or(false)
                 {
-                    return Ok((arena, xml_buf, collector, documents_count, file_count));
+                    return Ok((arena, xml_buf, read_buf, collector, documents_count, file_count));
                 }
 
                 let mut link_buf = BumpVec::new_in(&arena);
@@ -438,6 +440,7 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
                     .links::<P>(
                         &arena,
                         &mut xml_buf,
+                        &mut read_buf,
                         &mut link_buf,
                         check_anchors,
                         get_paragraphs,
@@ -454,11 +457,11 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
 
                 documents_count += 1;
 
-                Ok((arena, xml_buf, collector, documents_count, file_count))
+                Ok((arena, xml_buf, read_buf, collector, documents_count, file_count))
             },
         )
         .map(|result| {
-            result.map(|(_, _, collector, documents_count, file_count)| {
+            result.map(|(_, _, _, collector, documents_count, file_count)| {
                 (collector, documents_count, file_count)
             })
         })

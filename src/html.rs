@@ -1,6 +1,6 @@
 use std::fmt;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::Arc;
@@ -12,6 +12,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use crate::paragraph::ParagraphWalker;
+use crate::reusablebufread::ReusableBufRead;
 
 #[inline]
 fn is_paragraph_tag(tag: &[u8]) -> bool {
@@ -252,6 +253,7 @@ impl Document {
         &self,
         arena: &'b bumpalo::Bump,
         xml_buf: &mut Vec<u8>,
+        read_buf: &mut ReusableBufRead<fs::File>,
         sink: &mut BumpVec<'b, Link<'l, P::Paragraph>>,
         check_anchors: bool,
         get_paragraphs: bool,
@@ -262,6 +264,7 @@ impl Document {
         self.links_from_read::<_, P>(
             arena,
             xml_buf,
+            read_buf,
             sink,
             fs::File::open(&*self.path)?,
             check_anchors,
@@ -273,6 +276,7 @@ impl Document {
         &self,
         arena: &'b bumpalo::Bump,
         xml_buf: &mut Vec<u8>,
+        read_buf: &mut ReusableBufRead<R>,
         sink: &mut BumpVec<'b, Link<'l, P::Paragraph>>,
         read: R,
         check_anchors: bool,
@@ -281,7 +285,7 @@ impl Document {
     where
         'b: 'l,
     {
-        let mut reader = Reader::from_reader(BufReader::new(read));
+        let mut reader = Reader::from_reader(read_buf.lease(read));
         reader.trim_text(true);
         reader.expand_empty_elements(true);
         reader.check_end_names(false);
