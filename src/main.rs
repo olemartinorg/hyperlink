@@ -1,3 +1,4 @@
+mod alloc;
 mod collector;
 mod html;
 mod markdown;
@@ -17,6 +18,7 @@ use rayon::prelude::*;
 use collector::{BrokenLinkCollector, LinkCollector, UsedLinkCollector};
 use html::{DefinedLink, Document, DocumentBuffers, Link};
 use paragraph::{DebugParagraphWalker, NoopParagraphWalker, ParagraphHasher, ParagraphWalker};
+use alloc::{Allocator, Allocation};
 
 static MARKDOWN_FILES: &[&str] = &["md", "mdx"];
 static HTML_FILES: &[&str] = &["htm", "html"];
@@ -46,6 +48,9 @@ struct Cli {
     /// Enable specialized output for GitHub actions.
     #[clap(long = "github-actions")]
     github_actions: bool,
+
+    #[clap(long = "alloc-stats")]
+    alloc_stats: bool,
 
     /// Utilities for development of hyperlink.
     #[clap(subcommand)]
@@ -92,6 +97,7 @@ fn main() -> Result<(), Error> {
         sources_path,
         github_actions,
         subcommand,
+        alloc_stats,
     } = Cli::parse();
 
     if let Some(n) = threads {
@@ -128,11 +134,17 @@ fn main() -> Result<(), Error> {
         }
     };
 
-    if sources_path.is_some() {
+    let res = if sources_path.is_some() {
         check_links::<ParagraphHasher>(base_path, check_anchors, sources_path, github_actions)
     } else {
         check_links::<NoopParagraphWalker>(base_path, check_anchors, sources_path, github_actions)
+    };
+
+    if alloc_stats {
+        alloc::print_alloc_stats();
     }
+
+    res
 }
 
 fn check_links<P: ParagraphWalker>(
@@ -409,6 +421,7 @@ fn extract_html_links<C: LinkCollector<P::Paragraph>, P: ParagraphWalker>(
         .try_fold(
             || (DocumentBuffers::default(), C::new(), 0, 0),
             |(mut doc_buf, mut collector, mut documents_count, mut file_count), entry| {
+                let _guard = Allocator::with_usecase(Allocation::Document);
                 let path = entry.path();
                 let document = Document::new(base_path, &path);
 

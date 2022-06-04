@@ -4,6 +4,7 @@ use std::sync::Arc;
 use patricia_tree::PatriciaMap;
 
 use crate::html::{Href, Link, UsedLink};
+use crate::alloc::{Allocator, Allocation};
 
 impl<'a> AsRef<[u8]> for Href<'a> {
     fn as_ref(&self) -> &[u8] {
@@ -37,6 +38,7 @@ impl<P: Send> LinkCollector<P> for UsedLinkCollector<P> {
     }
 
     fn ingest(&mut self, link: Link<'_, P>) {
+        let _guard = Allocator::with_usecase(Allocation::Link);
         if let Link::Uses(used_link) = link {
             self.used_links.push(OwnedUsedLink {
                 href: used_link.href.0.to_owned(),
@@ -62,12 +64,14 @@ enum LinkState<P> {
 
 impl<P: Copy> LinkState<P> {
     fn add_usage(&mut self, link: &UsedLink<P>) {
+        let _guard = Allocator::with_usecase(Allocation::Link);
         if let LinkState::Undefined(ref mut links) = self {
             links.push((link.path.clone(), link.paragraph));
         }
     }
 
     fn update(&mut self, other: Self) {
+        let _guard = Allocator::with_usecase(Allocation::Link);
         match self {
             LinkState::Defined => (),
             LinkState::Undefined(links) => match other {
@@ -93,6 +97,7 @@ impl<P: Send + Copy> LinkCollector<P> for BrokenLinkCollector<P> {
     }
 
     fn ingest(&mut self, link: Link<'_, P>) {
+        let _guard = Allocator::with_usecase(Allocation::Link);
         match link {
             Link::Uses(used_link) => {
                 self.used_link_count += 1;
